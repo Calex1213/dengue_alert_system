@@ -8,7 +8,6 @@ import json
 import glob
 import shutil
 import subprocess
-import time
 import tempfile
 import zipfile
 from pathlib import Path
@@ -18,7 +17,6 @@ import folium
 import geopandas as gpd
 import pandas as pd
 import streamlit as st
-import streamlit.components.v1 as components
 from streamlit_folium import st_folium
 
 
@@ -1213,6 +1211,7 @@ def ensure_r_packages_ready() -> bool:
         capture_output=True,
         text=True,
         shell=False,
+        timeout=300,
     )
 
     combined_output = ""
@@ -1290,6 +1289,7 @@ def run_r_prediction(mode: str, level: str, year: int, week: int) -> Dict[str, A
         capture_output=True,
         text=True,
         shell=False,
+        timeout=180,
     )
 
     combined_output = ""
@@ -1588,224 +1588,6 @@ def hero() -> None:
 
 
 # ============================================================
-# FULL BROWSER LOADING OVERLAY
-# ============================================================
-
-def show_forecast_loading_overlay() -> None:
-    """Show a true full-page browser overlay using a small JS injection."""
-    components.html(
-        """
-        <script>
-        (function() {
-            const doc = window.parent.document;
-
-            const oldOverlay = doc.getElementById("forecast-loading-overlay");
-            if (oldOverlay) oldOverlay.remove();
-
-            const oldStyle = doc.getElementById("forecast-loading-overlay-style");
-            if (oldStyle) oldStyle.remove();
-
-            const style = doc.createElement("style");
-            style.id = "forecast-loading-overlay-style";
-            style.innerHTML = `
-                #forecast-loading-overlay {
-                    position: fixed;
-                    inset: 0;
-                    z-index: 2147483647;
-                    display: flex;
-                    align-items: center;
-                    justify-content: center;
-                    padding: 2rem;
-                    background:
-                        radial-gradient(circle at 16% 16%, rgba(251, 191, 36, 0.38), transparent 32%),
-                        radial-gradient(circle at 84% 18%, rgba(124, 58, 237, 0.34), transparent 35%),
-                        radial-gradient(circle at 72% 84%, rgba(20, 184, 166, 0.25), transparent 37%),
-                        linear-gradient(135deg, rgba(255, 247, 237, 0.92), rgba(248, 250, 252, 0.94), rgba(238, 242, 255, 0.92));
-                    backdrop-filter: blur(20px);
-                    font-family: Inter, Arial, sans-serif;
-                }
-
-                #forecast-loading-card {
-                    position: relative;
-                    overflow: hidden;
-                    width: min(820px, 92vw);
-                    border-radius: 38px;
-                    padding: 2.5rem 2.25rem;
-                    background:
-                        radial-gradient(circle at 12% 20%, rgba(255, 183, 77, 0.27), transparent 35%),
-                        radial-gradient(circle at 88% 18%, rgba(109, 40, 217, 0.20), transparent 36%),
-                        radial-gradient(circle at 72% 88%, rgba(20, 184, 166, 0.18), transparent 38%),
-                        rgba(255, 255, 255, 0.90);
-                    border: 1px solid rgba(255, 255, 255, 0.96);
-                    box-shadow: 0 34px 100px rgba(17, 24, 39, 0.22);
-                    text-align: center;
-                }
-
-                #forecast-loading-card::before {
-                    content: "";
-                    position: absolute;
-                    inset: -140px;
-                    background: conic-gradient(from 180deg, rgba(220,38,38,0), rgba(220,38,38,.13), rgba(109,40,217,.19), rgba(37,99,235,.17), rgba(20,184,166,.16), rgba(220,38,38,0));
-                    animation: forecastOverlaySpin 4.8s linear infinite;
-                    z-index: 0;
-                }
-
-                #forecast-loading-card::after {
-                    content: "";
-                    position: absolute;
-                    inset: 3px;
-                    border-radius: 35px;
-                    background: rgba(255, 255, 255, 0.78);
-                    backdrop-filter: blur(18px);
-                    z-index: 1;
-                }
-
-                #forecast-loading-content {
-                    position: relative;
-                    z-index: 2;
-                }
-
-                @keyframes forecastOverlaySpin {
-                    from { transform: rotate(0deg); }
-                    to { transform: rotate(360deg); }
-                }
-
-                #forecast-loading-orb {
-                    width: 102px;
-                    height: 102px;
-                    margin: 0 auto 1.35rem auto;
-                    border-radius: 32px;
-                    display: grid;
-                    place-items: center;
-                    font-size: 2.35rem;
-                    background: linear-gradient(135deg, #fee2e2, #ede9fe, #dbeafe, #dcfce7);
-                    border: 1px solid rgba(255, 255, 255, 0.98);
-                    box-shadow: 0 18px 52px rgba(109, 40, 217, 0.22);
-                    animation: forecastOverlayPulse 1.25s ease-in-out infinite;
-                }
-
-                @keyframes forecastOverlayPulse {
-                    0%, 100% { transform: translateY(0) scale(1); filter: saturate(1); }
-                    50% { transform: translateY(-4px) scale(1.045); filter: saturate(1.25); }
-                }
-
-                #forecast-loading-title {
-                    color: #111827;
-                    font-size: clamp(1.8rem, 3vw, 2.65rem);
-                    line-height: 1.05;
-                    letter-spacing: -0.06em;
-                    font-weight: 950;
-                    margin-bottom: .75rem;
-                }
-
-                #forecast-loading-subtitle {
-                    color: #374151;
-                    max-width: 650px;
-                    margin: 0 auto 1.35rem auto;
-                    font-size: 1.02rem;
-                    line-height: 1.65;
-                    font-weight: 650;
-                }
-
-                #forecast-loading-steps {
-                    display: grid;
-                    grid-template-columns: repeat(3, 1fr);
-                    gap: .78rem;
-                    margin-top: 1rem;
-                }
-
-                .forecast-loading-step {
-                    padding: .92rem .88rem;
-                    border-radius: 20px;
-                    background: linear-gradient(135deg, rgba(255,255,255,0.94), rgba(240,253,244,0.84));
-                    border: 1px solid rgba(17, 24, 39, 0.07);
-                    color: #111827;
-                    font-weight: 900;
-                    font-size: .9rem;
-                    box-shadow: 0 12px 26px rgba(17,24,39,0.055);
-                }
-
-                #forecast-loading-progress {
-                    height: 13px;
-                    border-radius: 999px;
-                    background: rgba(17, 24, 39, 0.08);
-                    overflow: hidden;
-                    margin-top: 1.5rem;
-                }
-
-                #forecast-loading-progress-bar {
-                    height: 100%;
-                    width: 38%;
-                    border-radius: 999px;
-                    background: linear-gradient(90deg, #dc2626, #7c3aed, #2563eb, #14b8a6, #16a34a);
-                    animation: forecastOverlaySlide 1.15s ease-in-out infinite alternate;
-                }
-
-                @keyframes forecastOverlaySlide {
-                    0% { transform: translateX(-25%); width: 35%; }
-                    100% { transform: translateX(175%); width: 46%; }
-                }
-
-                @media (max-width: 850px) {
-                    #forecast-loading-steps { grid-template-columns: 1fr; }
-                    #forecast-loading-title { font-size: 1.65rem; }
-                }
-            `;
-
-            doc.head.appendChild(style);
-
-            const overlay = doc.createElement("div");
-            overlay.id = "forecast-loading-overlay";
-            overlay.innerHTML = `
-                <div id="forecast-loading-card">
-                    <div id="forecast-loading-content">
-                        <div id="forecast-loading-orb">🦟</div>
-                        <div id="forecast-loading-title">Launching dengue forecast engine</div>
-                        <div id="forecast-loading-subtitle">
-                            Checking the selected week, loading saved models, generating citywide forecasts,
-                            preparing the barangay risk map, and finalizing weekly alert results.
-                        </div>
-                        <div id="forecast-loading-steps">
-                            <div class="forecast-loading-step">Citywide model running</div>
-                            <div class="forecast-loading-step">Barangay risk map preparing</div>
-                            <div class="forecast-loading-step">Weekly alerts finalizing</div>
-                        </div>
-                        <div id="forecast-loading-progress">
-                            <div id="forecast-loading-progress-bar"></div>
-                        </div>
-                    </div>
-                </div>
-            `;
-
-            doc.body.appendChild(overlay);
-        })();
-        </script>
-        """,
-        height=0,
-        width=0,
-    )
-
-
-def hide_forecast_loading_overlay() -> None:
-    """Remove the full-page loading overlay."""
-    components.html(
-        """
-        <script>
-        (function() {
-            const doc = window.parent.document;
-            const overlay = doc.getElementById("forecast-loading-overlay");
-            if (overlay) overlay.remove();
-
-            const style = doc.getElementById("forecast-loading-overlay-style");
-            if (style) style.remove();
-        })();
-        </script>
-        """,
-        height=0,
-        width=0,
-    )
-
-# ============================================================
 # MAIN APP
 # ============================================================
 
@@ -1921,38 +1703,35 @@ if selected_year is None or selected_week is None:
     st.stop()
 
 
-show_forecast_loading_overlay()
-
-# Give the browser a short moment to paint the overlay before the R process starts.
-time.sleep(0.25)
-
 try:
-    ensure_r_packages_ready()
+    with st.spinner("Generating dengue forecasts. Please wait..."):
+        ensure_r_packages_ready()
 
-    city_predictions = run_r_prediction(
-        mode=mode,
-        level="city",
-        year=int(selected_year),
-        week=int(selected_week),
-    )
+        city_predictions = run_r_prediction(
+            mode=mode,
+            level="city",
+            year=int(selected_year),
+            week=int(selected_week),
+        )
 
-    barangay_predictions = run_r_prediction(
-        mode=mode,
-        level="barangay",
-        year=int(selected_year),
-        week=int(selected_week),
-    )
-
-    hide_forecast_loading_overlay()
+        barangay_predictions = run_r_prediction(
+            mode=mode,
+            level="barangay",
+            year=int(selected_year),
+            week=int(selected_week),
+        )
 
 except FileNotFoundError as e:
-    hide_forecast_loading_overlay()
     st.error(str(e))
     st.info("Check that `r_scripts/predict_on_demand.R` exists inside your project folder.")
     st.stop()
 
+except subprocess.TimeoutExpired:
+    st.error("Prediction timed out. The R script took too long to finish on Streamlit Cloud.")
+    st.info("Try reducing the app workload, precomputing predictions, or optimizing the R script.")
+    st.stop()
+
 except Exception as e:
-    hide_forecast_loading_overlay()
     st.error("Prediction failed.")
     st.code(str(e))
     st.stop()
