@@ -1,0 +1,12 @@
+r-base
+r-base-dev
+libcurl4-openssl-dev
+libssl-dev
+libxml2-dev
+libgdal-dev
+libgeos-dev
+libproj-dev
+gdal-bin
+libudunits2-dev
+cmake
+build-essential
