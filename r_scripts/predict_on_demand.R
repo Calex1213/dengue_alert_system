@@ -11,6 +11,36 @@
 # ============================================================
 
 # -------------------------
+# 0A. Clean session + JSON-safe early errors
+# -------------------------
+# This is important when running locally from a project folder that has a broken renv setup.
+# It also makes package-loading errors return JSON instead of plain console text.
+Sys.setenv(RENV_CONFIG_AUTOLOADER_ENABLED = "FALSE")
+Sys.setenv(RENV_PROJECT = "NULL")
+options(warn = 1)
+
+current_libs <- .libPaths()
+non_renv_libs <- current_libs[!grepl("renv", current_libs, ignore.case = TRUE)]
+if (length(non_renv_libs) > 0) {
+  .libPaths(non_renv_libs)
+}
+
+json_escape_manual <- function(x) {
+  x <- paste(as.character(x), collapse = "\n")
+  x <- gsub("\\\\", "\\\\\\\\", x)
+  x <- gsub('"', '\\\\"', x)
+  x <- gsub("\r", "\\\\r", x, fixed = TRUE)
+  x <- gsub("\n", "\\\\n", x, fixed = TRUE)
+  x <- gsub("\t", "\\\\t", x, fixed = TRUE)
+  x
+}
+
+emit_error_json_and_quit <- function(message, status = 1) {
+  cat(paste0('{"error":true,"message":"', json_escape_manual(message), '"}'))
+  quit(status = status)
+}
+
+# -------------------------
 # 0. Quiet package loading
 # -------------------------
 # IMPORTANT FOR DEPLOYMENT:
@@ -18,38 +48,42 @@
 # Streamlit Cloud should install R packages through r_packages_setup.R.
 # The app intentionally avoids sf/spdep here for speed and deployment stability.
 
-needed_packages <- c(
-  "readxl", "dplyr", "tidyr", "stringr", "janitor", "purrr",
-  "tibble", "zoo", "jsonlite", "Matrix", "xgboost", "lightgbm"
-)
-
-missing_packages <- needed_packages[
-  !vapply(needed_packages, requireNamespace, logical(1), quietly = TRUE)
-]
-
-if (length(missing_packages) > 0) {
-  stop(
-    paste0(
-      "Missing required R package(s): ",
-      paste(missing_packages, collapse = ", "),
-      ". Install these before running the app."
-    )
+tryCatch({
+  needed_packages <- c(
+    "readxl", "dplyr", "tidyr", "stringr", "janitor", "purrr",
+    "tibble", "zoo", "jsonlite", "Matrix", "xgboost", "lightgbm"
   )
-}
 
-suppressPackageStartupMessages({
-  library(readxl)
-  library(dplyr)
-  library(tidyr)
-  library(stringr)
-  library(janitor)
-  library(purrr)
-  library(tibble)
-  library(zoo)
-  library(jsonlite)
-  library(Matrix)
-  library(xgboost)
-  library(lightgbm)
+  missing_packages <- needed_packages[
+    !vapply(needed_packages, requireNamespace, logical(1), quietly = TRUE)
+  ]
+
+  if (length(missing_packages) > 0) {
+    stop(
+      paste0(
+        "Missing required R package(s): ",
+        paste(missing_packages, collapse = ", "),
+        ". Install these before running the app."
+      )
+    )
+  }
+
+  suppressPackageStartupMessages({
+    library(readxl)
+    library(dplyr)
+    library(tidyr)
+    library(stringr)
+    library(janitor)
+    library(purrr)
+    library(tibble)
+    library(zoo)
+    library(jsonlite)
+    library(Matrix)
+    library(xgboost)
+    library(lightgbm)
+  })
+}, error = function(e) {
+  emit_error_json_and_quit(conditionMessage(e), status = 1)
 })
 
 has_lightgbm <- TRUE
