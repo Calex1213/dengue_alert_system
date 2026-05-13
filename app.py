@@ -5,9 +5,6 @@
 
 import html
 import json
-import glob
-import shutil
-import subprocess
 import tempfile
 import zipfile
 from pathlib import Path
@@ -41,12 +38,10 @@ BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = BASE_DIR / "data"
 MODEL_DIR = BASE_DIR / "models"
 METADATA_DIR = BASE_DIR / "model_metadata"
-R_SCRIPTS_DIR = BASE_DIR / "r_scripts"
+OUTPUTS_DIR = BASE_DIR / "outputs"
 
 DATASET_PATH = DATA_DIR / "FINAL_DATASET.xlsx"
 SHAPE_ZIP_PATH = DATA_DIR / "cebu_city_barangays.zip"
-R_SCRIPT_PATH = R_SCRIPTS_DIR / "predict_on_demand.R"
-R_PACKAGE_SETUP_PATH = BASE_DIR / "r_packages_setup.R"
 
 DISPLAY_HORIZONS = [0, 1, 2, 3, 4, 8, 12]
 
@@ -1159,149 +1154,109 @@ def render_pretty_table(df: pd.DataFrame, max_rows: int = 120) -> None:
 
 
 # ============================================================
-# R BRIDGE HELPERS
+# PRECOMPUTED OUTPUT HELPERS
 # ============================================================
 
-def find_rscript() -> str:
-    """Find Rscript on local Windows, Linux, Streamlit Cloud, or Posit-like servers."""
-    found = shutil.which("Rscript")
-    if found:
-        return found
-
-    candidates = []
-
-    # Windows local paths
-    candidates.extend(glob.glob(r"C:\Program Files\R\R-*\bin\x64\Rscript.exe"))
-    candidates.extend(glob.glob(r"C:\Program Files\R\R-*\bin\Rscript.exe"))
-    candidates.extend(glob.glob(r"C:\Program Files (x86)\R\R-*\bin\x64\Rscript.exe"))
-    candidates.extend(glob.glob(r"C:\Program Files (x86)\R\R-*\bin\Rscript.exe"))
-
-    # Linux / cloud paths
-    candidates.extend(glob.glob("/usr/bin/Rscript"))
-    candidates.extend(glob.glob("/usr/local/bin/Rscript"))
-    candidates.extend(glob.glob("/opt/R/*/bin/Rscript"))
-    candidates.extend(glob.glob("/opt/rstudio-connect/mnt/R/*/bin/Rscript"))
-
-    candidates = [c for c in candidates if Path(c).exists()]
-
-    if candidates:
-        return sorted(candidates, reverse=True)[0]
-
-    raise FileNotFoundError(
-        "Rscript could not be found. This app needs R installed because it calls "
-        "r_scripts/predict_on_demand.R. Install R / r-base, or make Rscript available on PATH."
-    )
+def mode_label_from_key(mode: str) -> str:
+    return "Standard model — uses recent dengue case data" if mode == "standard" else "Environmental-only model — use when recent case data are unavailable"
 
 
-@st.cache_resource(show_spinner=False)
-def ensure_r_packages_ready() -> bool:
-    """
-    Optional deployment helper.
-    If r_packages_setup.R exists, run it once per app session to prepare R packages.
-    If it does not exist, skip this step and let predict_on_demand.R check packages.
-    """
-    if not R_PACKAGE_SETUP_PATH.exists():
-        return True
-
-    rscript = find_rscript()
-
-    result = subprocess.run(
-        [rscript, str(R_PACKAGE_SETUP_PATH)],
-        cwd=str(BASE_DIR),
-        capture_output=True,
-        text=True,
-        shell=False,
-        timeout=300,
-    )
-
-    combined_output = ""
-    if result.stdout:
-        combined_output += result.stdout
-    if result.stderr:
-        combined_output += "\n" + result.stderr
-
-    if result.returncode != 0:
-        raise RuntimeError(combined_output.strip())
-
-    return True
-
-def extract_json_object(text: str) -> Dict[str, Any]:
-    if not text:
-        raise ValueError("No output was returned by the R prediction script.")
-
-    start = text.find("{")
-    if start == -1:
-        raise ValueError(f"No JSON object found in R output:\n{text}")
-
-    depth = 0
-    in_string = False
-    escape = False
-
-    for i in range(start, len(text)):
-        char = text[i]
-
-        if in_string:
-            if escape:
-                escape = False
-            elif char == "\\":
-                escape = True
-            elif char == '"':
-                in_string = False
-        else:
-            if char == '"':
-                in_string = True
-            elif char == "{":
-                depth += 1
-            elif char == "}":
-                depth -= 1
-                if depth == 0:
-                    json_text = text[start:i + 1]
-                    return json.loads(json_text)
-
-    raise ValueError(f"Incomplete JSON object in R output:\n{text}")
+def mode_short_label(mode: str) -> str:
+    return "Standard" if mode == "standard" else "Environmental-only"
 
 
-def run_r_prediction(mode: str, level: str, year: int, week: int) -> Dict[str, Any]:
-    if not R_SCRIPT_PATH.exists():
+def parse_output_filename(path: Path) -> Optional[Dict[str, Any]]:
+    """Parse files like standard_city_2024_w30.json or environmental_only_barangay_2024_w30.json."""
+    stem = path.stem
+
+    for mode in ["environmental_only", "standard"]:
+        prefix = f"{mode}_"
+        if not stem.startswith(prefix):
+            continue
+
+        rest = stem[len(prefix):]
+        parts = rest.split("_")
+        if len(parts) != 3:
+            return None
+
+        level, year_text, week_text = parts
+        if level not in ["city", "barangay"]:
+            return None
+        if not week_text.lower().startswith("w"):
+            return None
+
+        try:
+            return {
+                "path": path,
+                "mode": mode,
+                "level": level,
+                "year": int(year_text),
+                "week": int(week_text[1:]),
+            }
+        except ValueError:
+            return None
+
+    return None
+
+
+@st.cache_data(show_spinner=False)
+def load_available_outputs() -> pd.DataFrame:
+    if not OUTPUTS_DIR.exists():
+        return pd.DataFrame(columns=["path", "mode", "level", "year", "week"])
+
+    records = []
+    for path in sorted(OUTPUTS_DIR.glob("*.json")):
+        parsed = parse_output_filename(path)
+        if parsed is not None:
+            records.append(parsed)
+
+    if not records:
+        return pd.DataFrame(columns=["path", "mode", "level", "year", "week"])
+
+    return pd.DataFrame(records).sort_values(["mode", "year", "week", "level"])
+
+
+def output_path(mode: str, level: str, year: int, week: int) -> Path:
+    return OUTPUTS_DIR / f"{mode}_{level}_{int(year)}_w{int(week)}.json"
+
+
+@st.cache_data(show_spinner=False)
+def load_prediction_json(mode: str, level: str, year: int, week: int) -> Dict[str, Any]:
+    path = output_path(mode, level, year, week)
+
+    if not path.exists():
         raise FileNotFoundError(
-            f"Missing R bridge file: {R_SCRIPT_PATH}\n"
-            "Make sure predict_on_demand.R is inside the r_scripts folder."
+            f"Missing precomputed output: {path.relative_to(BASE_DIR)}\n"
+            "Generate this JSON locally first, then upload it to the outputs folder."
         )
 
-    rscript = find_rscript()
+    with open(path, "r", encoding="utf-8") as f:
+        return json.load(f)
 
-    command = [
-        rscript,
-        str(R_SCRIPT_PATH),
-        "--mode",
-        mode,
-        "--level",
-        level,
-        "--year",
-        str(year),
-        "--week",
-        str(week),
-    ]
 
-    result = subprocess.run(
-        command,
-        cwd=str(BASE_DIR),
-        capture_output=True,
-        text=True,
-        shell=False,
-        timeout=180,
+def render_loading_card() -> None:
+    st.markdown(
+        """
+        <div class="forecast-loading-card">
+            <div class="forecast-loading-content">
+                <div class="forecast-orb">🦟</div>
+                <div>
+                    <div class="forecast-loading-title">Loading saved dengue forecasts</div>
+                    <div class="forecast-loading-subtitle">
+                        Reading precomputed citywide and barangay-level outputs, preparing the risk map,
+                        and finalizing weekly alert displays.
+                    </div>
+                </div>
+            </div>
+            <div class="forecast-loading-chips">
+                <span class="forecast-loading-chip">No live R subprocess</span>
+                <span class="forecast-loading-chip">JSON outputs loading</span>
+                <span class="forecast-loading-chip">Map preparing</span>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
     )
-
-    combined_output = ""
-    if result.stdout:
-        combined_output += result.stdout
-    if result.stderr:
-        combined_output += "\n" + result.stderr
-
-    if result.returncode != 0:
-        raise RuntimeError(combined_output.strip())
-
-    return extract_json_object(combined_output)
 
 
 # ============================================================
@@ -1593,7 +1548,7 @@ def hero() -> None:
 
 hero()
 
-weeks_df = load_dataset_weeks()
+outputs_df = load_available_outputs()
 shape_gdf = load_barangay_shapefile()
 
 with st.sidebar:
@@ -1602,11 +1557,12 @@ with st.sidebar:
         <div class="sidebar-title-card">
             <div class="sidebar-title">Forecast Command Center</div>
             <div class="sidebar-subtitle">
-                Choose the model mode, origin week, then launch the citywide and barangay forecast.
+                Choose a saved model mode and origin week, then load the precomputed citywide
+                and barangay forecast outputs.
             </div>
             <div class="game-chip-row">
                 <span class="game-chip">MODE</span>
-                <span class="game-chip">WEEK</span>
+                <span class="game-chip">SAVED JSON</span>
                 <span class="game-chip">MAP</span>
             </div>
         </div>
@@ -1614,56 +1570,74 @@ with st.sidebar:
         unsafe_allow_html=True,
     )
 
-    prediction_mode_label = st.radio(
-        "Prediction mode",
-        [
-            "Standard model — uses recent dengue case data",
-            "Environmental-only model — use when recent case data are unavailable",
-        ],
-        index=0,
-    )
-
-    mode = "standard" if prediction_mode_label.startswith("Standard") else "environmental_only"
-
-    if weeks_df.empty:
-        st.error("Could not read year/week values from data/FINAL_DATASET.xlsx.")
+    if outputs_df.empty:
+        st.error("No precomputed JSON outputs were found in the outputs folder.")
+        selected_mode = None
         selected_year = None
         selected_week = None
+        mode = "standard"
     else:
-        available_years = sorted(weeks_df["year"].unique().tolist())
-
-        selected_year = st.selectbox(
-            "Origin year",
-            available_years,
-            index=len(available_years) - 1,
+        complete_pairs = (
+            outputs_df.groupby(["mode", "year", "week"])["level"]
+            .apply(lambda values: {str(v) for v in values})
+            .reset_index()
         )
+        complete_pairs = complete_pairs[
+            complete_pairs["level"].apply(lambda levels: {"city", "barangay"}.issubset(levels))
+        ].drop(columns=["level"])
 
-        available_weeks = sorted(
-            weeks_df.loc[weeks_df["year"] == selected_year, "week"].unique().tolist()
-        )
+        if complete_pairs.empty:
+            st.error("Outputs exist, but no year/week has both city and barangay JSON files.")
+            selected_mode = None
+            selected_year = None
+            selected_week = None
+            mode = "standard"
+        else:
+            available_modes = complete_pairs["mode"].drop_duplicates().tolist()
+            mode_options = {mode_label_from_key(m): m for m in available_modes}
+            prediction_mode_label = st.radio(
+                "Prediction mode",
+                list(mode_options.keys()),
+                index=0,
+            )
+            mode = mode_options[prediction_mode_label]
+            selected_mode = mode
 
-        if selected_year == int(weeks_df["year"].min()):
-            available_weeks = [w for w in available_weeks if w >= 30]
+            mode_weeks = complete_pairs[complete_pairs["mode"] == mode].copy()
+            available_years = sorted(mode_weeks["year"].unique().tolist())
 
-        selected_week = st.selectbox(
-            "Origin week",
-            available_weeks,
-            index=len(available_weeks) - 1,
-        )
+            selected_year = st.selectbox(
+                "Origin year",
+                available_years,
+                index=len(available_years) - 1,
+            )
+
+            available_weeks = sorted(
+                mode_weeks.loc[mode_weeks["year"] == selected_year, "week"].unique().tolist()
+            )
+
+            selected_week = st.selectbox(
+                "Origin week",
+                available_weeks,
+                index=len(available_weeks) - 1,
+            )
 
     predict_clicked = st.button(
-        "Launch Dengue Forecast",
+        "Load Saved Dengue Forecast",
         type="primary",
         use_container_width=True,
     )
+
+    outputs_found = not outputs_df.empty
+    shape_found = SHAPE_ZIP_PATH.exists()
 
     st.markdown(
         f"""
         <div class="status-card">
             <div class="mini-label">System status</div>
-            <div class="status-line"><span>Dataset</span><span class="{'status-ok' if DATASET_PATH.exists() else 'status-bad'}">{'Found' if DATASET_PATH.exists() else 'Missing'}</span></div>
-            <div class="status-line"><span>Shapefile</span><span class="{'status-ok' if SHAPE_ZIP_PATH.exists() else 'status-bad'}">{'Found' if SHAPE_ZIP_PATH.exists() else 'Missing'}</span></div>
-            <div class="status-line"><span>R bridge</span><span class="{'status-ok' if R_SCRIPT_PATH.exists() else 'status-bad'}">{'Found' if R_SCRIPT_PATH.exists() else 'Missing'}</span></div>
+            <div class="status-line"><span>Precomputed outputs</span><span class="{'status-ok' if outputs_found else 'status-bad'}">{'Found' if outputs_found else 'Missing'}</span></div>
+            <div class="status-line"><span>Shapefile</span><span class="{'status-ok' if shape_found else 'status-bad'}">{'Found' if shape_found else 'Missing'}</span></div>
+            <div class="status-line"><span>Live R subprocess</span><span class="status-ok">Disabled</span></div>
         </div>
         """,
         unsafe_allow_html=True,
@@ -1675,8 +1649,8 @@ col_a, col_b, col_c = st.columns(3)
 with col_a:
     render_metric_card(
         "Prediction mode",
-        "Standard" if mode == "standard" else "Environmental",
-        "Use environmental-only when recent case records are unavailable.",
+        mode_short_label(mode),
+        "Forecasts are loaded from saved JSON files instead of being generated live.",
     )
 
 with col_b:
@@ -1694,45 +1668,76 @@ with col_c:
     )
 
 
+if outputs_df.empty:
+    st.warning(
+        "Add JSON files to the `outputs/` folder first. Use the included "
+        "`precompute_forecasts.R` script locally, then upload the generated folder to GitHub."
+    )
+    st.stop()
+
 if not predict_clicked:
-    st.info("Choose your settings in the sidebar, then click **Launch Dengue Forecast**.")
+    st.info("Choose a saved forecast in the sidebar, then click **Load Saved Dengue Forecast**.")
     st.stop()
 
-if selected_year is None or selected_week is None:
-    st.error("Please check that FINAL_DATASET.xlsx has valid year and week columns.")
+if selected_mode is None or selected_year is None or selected_week is None:
+    st.error("No complete precomputed forecast is available for the selected mode/year/week.")
     st.stop()
 
-
+loading_placeholder = st.empty()
 try:
-    with st.spinner("Generating dengue forecasts. Please wait..."):
-        ensure_r_packages_ready()
+    loading_placeholder.markdown(
+        """
+        <div class="forecast-loading-card">
+            <div class="forecast-loading-content">
+                <div class="forecast-orb">🦟</div>
+                <div>
+                    <div class="forecast-loading-title">Loading saved dengue forecasts</div>
+                    <div class="forecast-loading-subtitle">
+                        Reading the precomputed citywide and barangay JSON outputs. No R model is being run on Streamlit Cloud.
+                    </div>
+                </div>
+            </div>
+            <div class="forecast-loading-chips">
+                <span class="forecast-loading-chip">Citywide JSON</span>
+                <span class="forecast-loading-chip">Barangay JSON</span>
+                <span class="forecast-loading-chip">Risk map</span>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
-        city_predictions = run_r_prediction(
-            mode=mode,
-            level="city",
-            year=int(selected_year),
-            week=int(selected_week),
-        )
+    city_predictions = load_prediction_json(
+        mode=selected_mode,
+        level="city",
+        year=int(selected_year),
+        week=int(selected_week),
+    )
 
-        barangay_predictions = run_r_prediction(
-            mode=mode,
-            level="barangay",
-            year=int(selected_year),
-            week=int(selected_week),
-        )
+    barangay_predictions = load_prediction_json(
+        mode=selected_mode,
+        level="barangay",
+        year=int(selected_year),
+        week=int(selected_week),
+    )
+
+    loading_placeholder.empty()
 
 except FileNotFoundError as e:
+    loading_placeholder.empty()
     st.error(str(e))
-    st.info("Check that `r_scripts/predict_on_demand.R` exists inside your project folder.")
+    st.info("Generate the missing output locally, then upload it to the `outputs/` folder in GitHub.")
     st.stop()
 
-except subprocess.TimeoutExpired:
-    st.error("Prediction timed out. The R script took too long to finish on Streamlit Cloud.")
-    st.info("Try reducing the app workload, precomputing predictions, or optimizing the R script.")
+except json.JSONDecodeError as e:
+    loading_placeholder.empty()
+    st.error("A saved JSON output could not be read.")
+    st.code(str(e))
     st.stop()
 
 except Exception as e:
-    st.error("Prediction failed.")
+    loading_placeholder.empty()
+    st.error("Failed to load the saved forecast outputs.")
     st.code(str(e))
     st.stop()
 
